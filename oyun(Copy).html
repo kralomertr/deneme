@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+<title>Canlı Renkli 3D Sonsuz Koşu Oyunu</title>
+<style>
+  body { margin:0; overflow:hidden; background: linear-gradient(to top, #87ceeb 0%, #ffffff 100%); font-family: Arial, sans-serif;}
+  #scoreboard {
+    position: absolute; top: 10px; left: 10px; color: #222; font-size: 20px; font-weight: bold; z-index: 10;
+    text-shadow: 1px 1px 2px white;
+  }
+  #controls {
+    position: fixed; bottom: 20px; width: 100%; text-align: center; z-index: 10;
+  }
+  button {
+    font-size: 22px;
+    margin: 0 15px;
+    padding: 15px 25px;
+    border-radius: 12px;
+    border: none;
+    background: #ff5722;
+    color: white;
+    user-select: none;
+    touch-action: manipulation;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    transition: background 0.2s;
+  }
+  button:active {
+    background: #e64a19;
+  }
+  #shop {
+    position: fixed;
+    top: 50px;
+    right: 20px;
+    background: rgba(255,255,255,0.95);
+    border-radius: 10px;
+    padding: 15px;
+    width: 230px;
+    font-size: 16px;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+    display: none;
+    z-index: 15;
+  }
+  #shop h3 {
+    margin-top: 0;
+    text-align: center;
+  }
+  #shop button {
+    margin: 8px 0;
+    width: 100%;
+  }
+  #toggleShopBtn {
+    position: fixed;
+    top: 10px;
+    right: 20px;
+    z-index: 20;
+    font-size: 18px;
+    padding: 10px 15px;
+    border-radius: 12px;
+    border: none;
+    background: #2962ff;
+    color: white;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    user-select: none;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+
+<div id="scoreboard">Altın: <span id="score">0</span></div>
+
+<div id="controls">
+  <button id="leftBtn">←</button>
+  <button id="jumpBtn">▲</button>
+  <button id="rightBtn">→</button>
+</div>
+
+<button id="toggleShopBtn">Mağaza Aç/Kapa</button>
+
+<div id="shop">
+  <h3>Mağaza</h3>
+  <div>
+    <button id="buyArmUpgrade">Kolları Büyüt (50 Altın)</button>
+  </div>
+  <div>
+    <button id="changeSkin">Ten Rengini Değiştir (30 Altın)</button>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
+
+<script>
+// Temel değişkenler
+let scene, camera, renderer;
+let player;
+let lanes = [-2.5, 0, 2.5];
+let currentLane = 1;
+let jumpVelocity = 0;
+let isJumping = false;
+const gravity = -0.03;
+const jumpStrength = 0.6;
+let obstacles = [];
+let coins = [];
+let score = 0;
+let speed = 0.22;
+let armScale = 1;
+let skinColor = 0xffcc99; // Ten rengi
+
+// Shaderlar - basit vertex & fragment shader ile malzeme oluşturduk
+const vertexShader = `
+  varying vec3 vNormal;
+  void main() {
+    vNormal = normalMatrix * normal;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+  }
+`;
+
+const fragmentShader = `
+  varying vec3 vNormal;
+  void main() {
+    float intensity = dot(normalize(vNormal), vec3(0.0, 0.0, 1.0));
+    vec3 color = vec3(1.0, 0.5, 0.2);
+    gl_FragColor = vec4(color * intensity, 1.0);
+  }
+`;
+
+init();
+animate();
+
+function init() {
+  // Sahne ve kamera
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x87ceeb);
+
+  camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 1000);
+  camera.position.set(0, 6, 13);
+  camera.lookAt(0, 1, 0);
+
+  // Renderer
+  renderer = new THREE.WebGLRenderer({antialias:true});
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  // Işıklar
+  const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+  dirLight.position.set(5, 10, 8);
+  scene.add(dirLight);
+
+  const ambientLight = new THREE.AmbientLight(0x606060);
+  scene.add(ambientLight);
+
+  // Zemin
+  const groundGeo = new THREE.PlaneGeometry(12, 1000);
+  const groundMat = new THREE.MeshPhongMaterial({color: 0x6ab04c});
+  const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.rotation.x = -Math.PI/2;
+  ground.position.z = -500;
+  scene.add(ground);
+
+  // Binalar
+  for(let i=0; i<7; i++) {
+    let building = createBuilding( (Math.random()*8 -4), -10 - i*60, 5 + Math.random()*5, Math.floor(Math.random()*3)+2);
+    scene.add(building);
+  }
+
+  // Oyuncu
+  player = createPlayer();
+  player.position.set(lanes[currentLane], 1.05, 0);
+  scene.add(player);
+
+  // Engeller
+  for(let i=0; i<9; i++){
+    const obs = createObstacle(-30 - i*38);
+    obstacles.push(obs);
+    scene.add(obs.mesh);
+  }
+
+  // Altınlar
+  for(let i=0; i<16; i++){
+    const coin = createCoin(-10 - i*24);
+    coins.push(coin);
+    scene.add(coin.mesh);
+  }
+
+  // Kontroller
+  document.getElementById('leftBtn').addEventListener('touchstart', moveLeft);
+  document.getElementById('rightBtn').addEventListener('touchstart', moveRight);
+  document.getElementById('jumpBtn').addEventListener('touchstart', jump);
+
+  window.addEventListener('keydown', (e) => {
+    if(e.code === 'ArrowLeft') moveLeft();
+    else if(e.code === 'ArrowRight') moveRight();
+    else if(e.code === 'Space') jump();
+  });
+
+  document.getElementById('toggleShopBtn').addEventListener('click', () => {
+    const shop = document.getElementById('shop');
+    shop.style.display = (shop.style.display === 'block') ? 'none' : 'block';
+  });
+
+  document.getElementById('buyArmUpgrade').addEventListener('click', () => {
+    if(score >= 50) {
+      score -= 50;
+      armScale = 1.6;
+      updateScore();
+      updatePlayerArms();
+    } else {
+      alert('Yeterli altınınız yok!');
+    }
+  });
+
+  document.getElementById('changeSkin').addEventListener('click', () => {
+    if(score >= 30) {
+      score -= 30;
+      skinColor = (skinColor === 0xffcc99) ? 0xff9966 : 0xffcc99;
+      updateScore();
+      updatePlayerSkin();
+    } else {
+      alert('Yeterli altınınız yok!');
+    }
+  });
+
+  window.addEventListener('resize', onWindowResize);
+}
+
+function createPlayer() {
+  const group = new THREE.Group();
+
+  // Gövde (Shader malzeme ile)
+  const bodyGeo = new THREE.CylinderGeometry(0.8, 0.8, 1.5, 24);
+  const bodyMat = new THREE.ShaderMaterial({
+    vertexShader,
+    fragmentShader,
+    shininess: 60
+  });
+  const body = new THREE.Mesh(bodyGeo, bodyMat);
+  body.position.y = 1.5;
+  group.add(body);
+
+  // Kafa
+  const headGeo = new THREE.SphereGeometry(0.6, 24, 24);
+  const headMat = new THREE.MeshPhongMaterial({color: skinColor});
+  const head = new THREE.Mesh(headGeo, headMat);
+  head.position.y = 2.6;
+  group.add(head);
+
+  // Kollar
+  const armGeo = new THREE.CylinderGeometry(0.2, 0.2, 1.2, 16);
+  const armMat = new THREE.MeshPhongMaterial({color: skinColor});
+  const leftArm = new THREE.Mesh(armGeo, armMat);
+  leftArm.position.set(-1, 1.7, 0);
+  leftArm.name = 'leftArm';
+  group.add(leftArm);
+
+  const rightArm = new THREE.Mesh(armGeo, armMat);
+  rightArm.position.set(1, 1.7, 0);
+  rightArm.name = 'rightArm';
+  group.add(rightArm);
+
+  // Bacaklar
+  const legGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.7, 16);
+  const legMat = new THREE.MeshPhongMaterial({color: 0x333333});
+  const leftLeg = new THREE.Mesh(legGeo, legMat);
+  leftLeg.position.set(-0.3, 0.35, 0);
+  group.add(leftLeg);
+
+  const rightLeg = new THREE.Mesh(legGeo, legMat);
+  rightLeg.position.set(0.3, 0.35, 0);
+  group.add(rightLeg);
+
+  return group;
+}
+
+function updatePlayerArms() {
+  const leftArm = player.getObjectByName('leftArm');
+  const rightArm = player.getObjectByName('rightArm');
+  if(leftArm && rightArm) {
+    leftArm.scale.set(armScale, armScale, armScale);
+    rightArm.scale.set(armScale, armScale, armScale);
+  }
+}
+
+function updatePlayerSkin() {
+  const head = player.children.find(c => c.geometry.type === 'SphereGeometry');
+  const leftArm = player.getObjectByName('leftArm');
+  const rightArm = player.getObjectByName('rightArm');
+  if(head) head.material.color.setHex(skinColor);
+
+
+if(leftArm) leftArm.material.color.setHex(skinColor);
+  if(rightArm) rightArm.material.color.setHex(skinColor);
+}
+
+function createBuilding(x, z, height, floors) {
+  const group = new THREE.Group();
+
+  for(let i = 0; i < floors; i++) {
+    const floorGeo = new THREE.BoxGeometry(3, height / floors, 3);
+    const floorMat = new THREE.MeshPhongMaterial({color: 0xaaaaaa});
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.position.set(x, (i + 0.5) * (height / floors), z);
+    group.add(floor);
+  }
+
+  return group;
+}
+
+function createObstacle(z) {
+  const geo = new THREE.BoxGeometry(1.8, 1.8, 1.8);
+  const mat = new THREE.MeshPhongMaterial({color: 0x8B0000});
+  const mesh = new THREE.Mesh(geo, mat);
+
+  // 3 şeritten birinde rastgele konumlandır
+  const lane = lanes[Math.floor(Math.random() * lanes.length)];
+  mesh.position.set(lane, 0.9, z);
+
+  return {mesh, lane, passed: false};
+}
+
+function createCoin(z) {
+  const geo = new THREE.TorusGeometry(0.5, 0.2, 16, 100);
+  const mat = new THREE.MeshPhongMaterial({color: 0xFFD700});
+  const mesh = new THREE.Mesh(geo, mat);
+
+  const lane = lanes[Math.floor(Math.random() * lanes.length)];
+  mesh.position.set(lane, 1.2, z);
+  mesh.rotation.x = Math.PI / 2;
+
+  return {mesh, lane, collected: false};
+}
+
+function moveLeft() {
+  if (currentLane > 0) {
+    currentLane--;
+  }
+}
+
+function moveRight() {
+  if (currentLane < lanes.length - 1) {
+    currentLane++;
+  }
+}
+
+function jump() {
+  if (!isJumping) {
+    jumpVelocity = jumpStrength;
+    isJumping = true;
+  }
+}
+
+function updateScore() {
+  document.getElementById('score').textContent = score;
+}
+
+function onWindowResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  // Oyuncu pozisyonu - X ekseninde doğru lane'e kaydırma (smooth)
+  const targetX = lanes[currentLane];
+  player.position.x += (targetX - player.position.x) * 0.2;
+
+  // Z ekseninde ileri hareket (sürekli ileri)
+  player.position.z -= speed;
+
+  // Zıplama mekaniği
+  if (isJumping) {
+    jumpVelocity += gravity;
+    player.position.y += jumpVelocity;
+
+    if (player.position.y <= 1.05) {
+      player.position.y = 1.05;
+      isJumping = false;
+      jumpVelocity = 0;
+    }
+  }
+
+  // Engel hareketi (oyuncu ile aynı hızda ileriye doğru geliyor gibi)
+  obstacles.forEach(obs => {
+    obs.mesh.position.z += speed;
+    if (obs.mesh.position.z > player.position.z + 5) {
+      // Engeli tekrar sonsuza at
+      obs.mesh.position.z = player.position.z - 200 - Math.random() * 200;
+      obs.lane = lanes[Math.floor(Math.random() * lanes.length)];
+      obs.mesh.position.x = obs.lane;
+      obs.passed = false;
+    }
+
+    // Çarpışma kontrolü (basit kutu-kutu çarpışma)
+    const dx = Math.abs(obs.mesh.position.x - player.position.x);
+    const dz = Math.abs(obs.mesh.position.z - player.position.z);
+    const dy = Math.abs(obs.mesh.position.y - player.position.y);
+
+    if (dx < 1.3 && dz < 1.3 && dy < 1.5) {
+      // Çarpışma oldu - oyunu durdur ya da puanı sıfırla vb.
+      alert('Oyunu kaybettin! Altın: ' + score);
+      resetGame();
+    }
+  });
+
+  // Altınlar
+  coins.forEach(coin => {
+    coin.mesh.position.z += speed;
+    coin.mesh.rotation.y += 0.05;
+    if (coin.mesh.position.z > player.position.z + 5) {
+      coin.mesh.position.z = player.position.z - 150 - Math.random() * 150;
+      coin.lane = lanes[Math.floor(Math.random() * lanes.length)];
+      coin.mesh.position.x = coin.lane;
+      coin.collected = false;
+      coin.mesh.visible = true;
+    }
+
+    // Altın toplama kontrolü
+    const dx = Math.abs(coin.mesh.position.x - player.position.x);
+    const dz = Math.abs(coin.mesh.position.z - player.position.z);
+    const dy = Math.abs(coin.mesh.position.y - player.position.y);
+
+    if (!coin.collected && dx < 1.3 && dz < 1.3 && dy < 1.5) {
+      coin.collected = true;
+      coin.mesh.visible = false;
+      score += 1;
+      updateScore();
+    }
+  });
+
+  // Kamera takip
+  camera.position.z = player.position.z + 13;
+  camera.position.x += (player.position.x - camera.position.x) * 0.1;
+  camera.lookAt(player.position.x, player.position.y + 1, player.position.z);
+
+  renderer.render(scene, camera);
+}
+
+function resetGame() {
+  score = 0;
+  updateScore();
+
+  player.position.set(lanes[1], 1.05, 0);
+  currentLane = 1;
+  isJumping = false;
+  jumpVelocity = 0;
+
+  // Engel ve altın pozisyonlarını resetle
+  obstacles.forEach((obs, i) => {
+    obs.mesh.position.z = player.position.z - 30 - i * 38;
+    obs.lane = lanes[Math.floor(Math.random() * lanes.length)];
+    obs.mesh.position.x = obs.lane;
+    obs.passed = false;
+  });
+  coins.forEach((coin, i) => {
+    coin.mesh.position.z = player.position.z - 10 - i * 24;
+    coin.lane = lanes[Math.floor(Math.random() * lanes.length)];
+    coin.mesh.position.x = coin.lane;
+    coin.collected = false;
+    coin.mesh.visible = true;
+  });
+
+  // Mağaza görünümünü kapat
+  document.getElementById('shop').style.display = 'none';
+  armScale = 1;
+  updatePlayerArms();
+  skinColor = 0xffcc99;
+  updatePlayerSkin();
+}
+</script>
+
+</body>
+</html>
